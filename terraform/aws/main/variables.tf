@@ -19,3 +19,15 @@ variable "raw_bucket_name" {
   type        = string
   default     = "uk-property-platform-raw-data"
 }
+
+variable "monthly_cost_limit" {
+  description = "Monthly AWS budget in USD. Alerts fire at 30% and 50% actual spend, and at 100% forecast."
+  type        = number
+  default     = 10
+}
+
+variable "budget_notification_email" {
+  description = "Email address that receives budget alerts. Set it in terraform.tfvars (git-ignored)."
+  type        = string
+  sensitive   = true
+}
