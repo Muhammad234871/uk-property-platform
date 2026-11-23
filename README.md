@@ -83,7 +83,7 @@ You'll need:
 Airflow runs from the project's own virtual environment, not Docker.
 
 ```bash
-git clone https://github.com/usama-dev/uk-property-platform.git
+git clone https://github.com/Muhammad234871/uk-property-platform.git
 cd uk-property-platform
 
 cp .env.example .env              # then fill in your own values
