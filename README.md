@@ -6,7 +6,7 @@ This project builds a monthly pipeline around that data. It pulls in Price Paid 
 
 I'm building it to practise the tools I use (or want to use) at work, on a dataset that's big enough to cause real problems.
 
-> **Status:** early days. See the [roadmap](#roadmap) for what's done and what isn't.
+> **Status:** the AWS foundation is in place (Phase 1). Ingestion is next. See the [roadmap](#roadmap) for what's done and what isn't.
 
 ## Architecture
 
@@ -57,9 +57,9 @@ The longer reasoning, and the trade-offs, are in [docs/decisions.md](docs/decisi
 
 | Phase | What | Status |
 |---|---|---|
-| 0 | Repo setup: folder structure, `.gitignore`, `.env.example`, Makefile, dedicated Airflow instance | ⏳ In progress |
-| – | CI with GitHub Actions (ruff, pytest), branch protection | ⬜ Not started |
-| 1 | AWS with Terraform: remote state with S3 native locking, raw bucket (encryption, lifecycle to IA/Glacier), least-privilege pipeline IAM user, budget alert; Terraform checks in CI | ⬜ Not started |
+| 0 | Repo setup: folder structure, `.gitignore`, `.env.example`, Makefile, dedicated Airflow instance | ✅ Done |
+| – | CI with GitHub Actions (ruff, pytest), branch protection | ✅ Done |
+| 1 | AWS with Terraform: remote state with S3 native locking, raw bucket (encryption, versioning, lifecycle to IA/Glacier IR), least-privilege pipeline IAM user enforced by Terraform, budget alert; Terraform checks in CI | ✅ Done |
 | 2 | Ingestion: Land Registry, ONS Postcodes, EPC API → S3 raw; idempotent monthly partitions with manifests; one-off 1995→today backfill (~30M rows) | ⬜ Not started |
 | 3 | Airflow orchestration: monthly DAG, skip if no new file, parallel ingest, retries, backfills, DAG tests in CI | ⬜ Not started |
 | 4 | Databricks Bronze: Delta tables with enforced schema, metadata columns, partition overwrite with `replaceWhere` | ⬜ Not started |
@@ -95,7 +95,36 @@ make test
 make airflow                      # Airflow UI on http://localhost:8082
 ```
 
-More setup detail (Terraform, Databricks, Snowflake) will be added as each phase lands.
+More setup detail (Databricks, Snowflake) will be added as each phase lands.
+
+## Infrastructure
+
+Everything in AWS is created with Terraform and lives in `eu-north-1` (the account's organisation only allows that region, see [decision 009](docs/decisions.md)). There are two stacks:
+
+| Stack | What it creates | Where its state lives |
+|---|---|---|
+| `terraform/aws/bootstrap` | The S3 bucket that holds Terraform state | A local file (run once) |
+| `terraform/aws/main` | Raw data bucket, pipeline IAM user and policy, monthly budget | `s3://<state bucket>/aws/main.tfstate`, locked with an S3 lock file |
+
+A few things worth knowing:
+
+- **Terraform runs with short-lived credentials** from `aws login`. There's no admin access key on disk.
+- **The pipeline user can only touch the raw bucket.** That's list, read, write and delete, nothing else. Terraform also removes any policy that gets attached to it by hand.
+- **Terraform never creates access keys,** because they'd end up in plain text in the state file. The pipeline's key is created once with the AWS CLI.
+- **Raw files are never deleted.** They move to cheaper storage as they age (Standard-IA after 30 days, Glacier Instant Retrieval after 180), and overwritten versions are kept for 30 days.
+
+To run it:
+
+```bash
+aws login --profile terraform-admin --region eu-north-1
+
+cd terraform/aws/main
+cp terraform.tfvars.example terraform.tfvars   # add your email for budget alerts
+terraform init
+terraform plan
+```
+
+Every pull request runs `terraform fmt -check` and `terraform validate` on both stacks, and `main` can't be merged into until they pass. The reasoning behind each choice is in [docs/decisions.md](docs/decisions.md) (006–012).
 
 ## Project structure
 
