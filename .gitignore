@@ -3,7 +3,7 @@
 *.pem
 *.key
 .databrickscfg
-profiles.yml          # dbt connection profile (keep it in ~/.dbt/, not in the repo)
+profiles.yml  
 
 # Python
 __pycache__/
@@ -37,7 +37,6 @@ dbt/logs/
 *.tfstate
 *.tfstate.*
 *.tfvars
-.terraform.lock.hcl
 
 # Databricks Asset Bundles
 .databricks/

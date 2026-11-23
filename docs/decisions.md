@@ -123,3 +123,23 @@ If I change my mind later, I'll add a new entry rather than rewrite an old one. 
 **Alternatives.** `AmazonS3FullAccess`. It's quicker, but it gives access to every bucket in the account, including other projects' buckets.
 
 **Consequences.** Adding a new bucket later (for example a Parquet export bucket for Snowflake) needs a policy change. That's the point: every new permission shows up in a pull request.
+
+---
+
+## 009. Run everything in eu-north-1 (Stockholm)
+
+**Status:** Accepted
+
+**Context.** I planned to use `eu-west-2` (London), since the data is about UK property. The first `terraform apply` failed with `AccessDenied ... explicit deny in a service control policy`. My AWS account sits inside an AWS Organization, and its service control policy only allows resources in the account's home region, `eu-north-1`. An SCP can't be overridden from inside the account, not even by a full-access role.
+
+**Decision.** Every AWS resource in this project lives in `eu-north-1`: the Terraform state bucket, the raw bucket, and anything added later. The region is set in one place per stack (the provider and the backend), and in `AWS_DEFAULT_REGION` for the Python code.
+
+**Alternatives.**
+- *Ask for the SCP to allow `eu-west-2`.* That's not in my control, and it isn't worth it for a portfolio project.
+- *Use a separate AWS account without the restriction.* Possible, but it would mean managing another account and set of credentials for no real gain.
+
+**Consequences.**
+- The data still stays in the EU, and latency from the UK is fine for a monthly batch pipeline.
+- The other platforms need to match. The Snowflake account (Phase 6) should be on AWS `eu-north-1`, so loading from S3 stays inside one region with no cross-region transfer charges. The same goes for Databricks, if a workspace region can be chosen.
+- `aws login` also has to go through `eu-north-1` (`aws login --region eu-north-1`), even though credentials work in any region.
+- If the account ever moves out of the organization, switching region means re-creating the buckets. Raw data can be copied across, and everything downstream can be rebuilt from raw (see 002).
