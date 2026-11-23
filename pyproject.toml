@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uk-property-platform"
+version = "0.1.0"
+description = "End-to-end UK property data platform: Land Registry, ONS and EPC data through Airflow, Databricks, Snowflake and dbt."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "boto3>=1.35",
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "moto[s3]>=5.0",
+    "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["ingestion*"]
+
+# ---------- Ruff ----------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["dbt/target", "dbt/dbt_packages"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # import sorting
+    "B",   # bugbear (likely bugs)
+    "UP",  # pyupgrade (modern syntax)
+]
+
+# ---------- Pytest ----------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
