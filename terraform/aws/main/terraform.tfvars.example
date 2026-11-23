@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (git-ignored) and fill in real values:
+#   cp terraform.tfvars.example terraform.tfvars
+
+budget_notification_email = "you@example.com"
+
+# Optional overrides (defaults are in variables.tf)
+# monthly_cost_limit = 10

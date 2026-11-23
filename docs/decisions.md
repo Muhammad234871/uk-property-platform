@@ -34,7 +34,7 @@ If I change my mind later, I'll add a new entry rather than rewrite an old one. 
 
 **Alternatives.** Convert to Parquet on the way in. That would make files smaller and faster to read, but if the conversion has a bug, the original is gone.
 
-**Consequences.** Raw storage is larger than it needs to be. A lifecycle rule moves old files to Standard-IA after 30 days and Glacier after 180 days, which keeps the cost to pennies. In return, any later stage can be rebuilt from scratch.
+**Consequences.** Raw storage is larger than it needs to be. A lifecycle rule moves old files to Standard-IA after 30 days and Glacier Instant Retrieval after 180 days, which keeps the cost to pennies (see 011). In return, any later stage can be rebuilt from scratch.
 
 ---
 
@@ -114,7 +114,7 @@ If I change my mind later, I'll add a new entry rather than rewrite an old one. 
 
 ## 008. Least-privilege IAM for the pipeline
 
-**Status:** Proposed
+**Status:** Accepted (see 012 for how it's enforced)
 
 **Context.** The pipeline only ever needs to read, write and delete objects in one bucket.
 
@@ -123,6 +123,8 @@ If I change my mind later, I'll add a new entry rather than rewrite an old one. 
 **Alternatives.** `AmazonS3FullAccess`. It's quicker, but it gives access to every bucket in the account, including other projects' buckets.
 
 **Consequences.** Adding a new bucket later (for example a Parquet export bucket for Snowflake) needs a policy change. That's the point: every new permission shows up in a pull request.
+
+One detail is easy to get wrong. S3 has two kinds of resource: the bucket (`arn:aws:s3:::name`) and the objects in it (`arn:aws:s3:::name/*`). `ListBucket` only applies to the bucket, and `Get/Put/DeleteObject` only apply to objects. My first draft gave the object actions to the bucket ARN. The plan looked fine and Terraform applied nothing wrong, but every upload would have failed with `AccessDenied` at runtime. So the policy has one statement per resource type.
 
 ---
 
@@ -143,3 +145,67 @@ If I change my mind later, I'll add a new entry rather than rewrite an old one. 
 - The other platforms need to match. The Snowflake account (Phase 6) should be on AWS `eu-north-1`, so loading from S3 stays inside one region with no cross-region transfer charges. The same goes for Databricks, if a workspace region can be chosen.
 - `aws login` also has to go through `eu-north-1` (`aws login --region eu-north-1`), even though credentials work in any region.
 - If the account ever moves out of the organization, switching region means re-creating the buckets. Raw data can be copied across, and everything downstream can be rebuilt from raw (see 002).
+
+---
+
+## 010. S3 native state locking instead of DynamoDB
+
+**Status:** Accepted
+
+**Context.** Terraform state needs a lock, so that two `apply` runs (for example me locally and CI later) can't write the state at the same time and corrupt it. For years the standard answer on AWS was an S3 bucket for the state plus a DynamoDB table for the lock.
+
+**Decision.** The S3 backend uses `use_lockfile = true` (Terraform 1.10+). Terraform writes a small `main.tfstate.tflock` object next to the state file while it runs and deletes it when it finishes. There's no DynamoDB table. Both stacks require Terraform `>= 1.10`.
+
+**Alternatives.**
+- *DynamoDB locking.* It still works, but HashiCorp has deprecated it in favour of the S3 lock file. It's one more resource to create, secure and pay for.
+- *No locking.* Fine for one person on one laptop, until CI starts running Terraform too.
+
+**Consequences.** It's one less moving part, and the state bucket is the only bootstrap resource. I saw it work on the first apply: the `.tflock` object appeared during the run and disappeared afterwards. If a run is killed mid-apply, the lock can be left behind. In that case I clear it with `terraform force-unlock <id>`, after making sure nothing else is running.
+
+---
+
+## 011. Raw bucket: versioning, 30-day old versions, Glacier Instant Retrieval
+
+**Status:** Accepted
+
+**Context.** Raw files are the permanent source of truth (002), and loads are idempotent: a re-run deletes and rewrites a month (003). Two risks follow from that. A buggy re-run could overwrite a good month with a bad one, and storage for ~30 years of files grows forever. My first lifecycle draft also had `expiration { days = 365 }`, which would have permanently deleted the backfill after a year. Land Registry only publishes the latest monthly file, so that data couldn't be downloaded again.
+
+**Decision.**
+- **Versioning on.** An overwritten or deleted file becomes a "noncurrent" version instead of disappearing.
+- **Noncurrent versions expire after 30 days.** That gives a month to notice a bad load and roll back, without paying to keep every re-run forever.
+- **Current files are never expired.** They only move to cheaper storage: Standard-IA after 30 days, then **Glacier Instant Retrieval** after 180 days (prefix `raw/`).
+- **Incomplete multipart uploads are aborted after 7 days**, so a failed 5 GB backfill upload doesn't leave hidden, billable parts behind.
+
+**Alternatives.**
+- *Glacier Flexible Retrieval.* It's cheaper per GB, but objects can't be read until they're restored, which takes hours. Databricks would fail when reprocessing old months. Glacier IR costs a little more and can be read instantly.
+- *No versioning.* It's simpler and cheaper, but there's no way back from a bad overwrite.
+- *Expiring raw files.* This is ruled out by 002, because the data can't be downloaded again.
+
+**Consequences.** Each re-run of a month briefly doubles the storage for that month, until the old version expires after 30 days. Standard-IA and Glacier IR have minimum storage periods (30 and 90 days) and per-GB retrieval fees, which are fine for data that is mostly written once and read rarely. Reading the whole history often, for example rebuilding bronze every week, would make retrieval fees noticeable. Bronze is built incrementally, so that shouldn't happen.
+
+---
+
+## 012. Terraform is the only source of truth for the pipeline user's permissions
+
+**Status:** Accepted
+
+**Context.** The `uk-property-pipeline` user was first created by hand in the console, then imported into Terraform with an `import` block. After applying the least-privilege policy (008), I tested it with the user's own key: listing the raw bucket should work, and listing the Terraform state bucket should fail. The state bucket was readable. The user still had `AdministratorAccess` attached from when I created it by hand.
+
+Terraform hadn't removed it, because Terraform only manages what's in the code. The code declared an inline policy and said nothing about attached managed policies, so Terraform left them alone. Importing a resource doesn't clean up what's already attached to it.
+
+**Decision.**
+- I detached `AdministratorAccess` straight away and re-ran the tests. The raw bucket was still readable and writable, and the state bucket now returned `AccessDenied`.
+- To stop it happening again, `iam.tf` uses two "exclusive" resources:
+  - `aws_iam_user_policy_attachments_exclusive` with `policy_arns = []`: the user may have **no** managed policies.
+  - `aws_iam_user_policies_exclusive` listing only `raw-bucket-access`: no other inline policies.
+- If anyone attaches a policy by hand, the next `terraform plan` shows the drift and `apply` removes it.
+
+**Alternatives.**
+- *Just detach it and move on.* This fixes today's problem, but nothing stops it coming back silently.
+- *An IAM permissions boundary.* It caps what the user can ever do, even if an admin policy is attached. It's stronger, but it's one more policy to maintain, and it doesn't make the drift visible. It might be worth adding later if more users or roles appear.
+- *An AWS Config rule to detect admin policies on users.* This is the right tool across a whole organisation, but too heavy for one project.
+
+**Consequences.**
+- Permissions can only change through a pull request to `iam.tf`. A console change is undone on the next apply, which is the intended behaviour.
+- **Lesson for every future import:** after importing anything, check what's attached to it that the code doesn't describe, and test permissions with the real credentials. A clean `terraform plan` only proves the code matches the parts of AWS that the code mentions.
+- The pipeline's access key had admin rights for a few minutes before the fix. It only ever existed on my machine, so I didn't rotate it.
