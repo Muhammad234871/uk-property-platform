@@ -1,0 +1,53 @@
+# Secrets
+.env
+*.pem
+*.key
+.databrickscfg
+profiles.yml          # dbt connection profile (keep it in ~/.dbt/, not in the repo)
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data (raw files live in S3, never in git)
+data/
+*.csv
+*.parquet
+*.zip
+
+# Airflow (if anything gets created inside the repo)
+logs/
+airflow.db
+airflow.cfg
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform.lock.hcl
+
+# Databricks Asset Bundles
+.databricks/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
