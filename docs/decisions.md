@@ -114,7 +114,7 @@ If I change my mind later, I'll add a new entry rather than rewrite an old one. 
 
 ## 008. Least-privilege IAM for the pipeline
 
-**Status:** Proposed
+**Status:** Accepted (see 012 for how it's enforced)
 
 **Context.** The pipeline only ever needs to read, write and delete objects in one bucket.
 
@@ -123,6 +123,8 @@ If I change my mind later, I'll add a new entry rather than rewrite an old one. 
 **Alternatives.** `AmazonS3FullAccess`. It's quicker, but it gives access to every bucket in the account, including other projects' buckets.
 
 **Consequences.** Adding a new bucket later (for example a Parquet export bucket for Snowflake) needs a policy change. That's the point: every new permission shows up in a pull request.
+
+One detail is easy to get wrong. S3 has two kinds of resource: the bucket (`arn:aws:s3:::name`) and the objects in it (`arn:aws:s3:::name/*`). `ListBucket` only applies to the bucket, and `Get/Put/DeleteObject` only apply to objects. My first draft gave the object actions to the bucket ARN. The plan looked fine and Terraform applied nothing wrong, but every upload would have failed with `AccessDenied` at runtime. So the policy has one statement per resource type.
 
 ---
 
@@ -180,3 +182,30 @@ If I change my mind later, I'll add a new entry rather than rewrite an old one. 
 - *Expiring raw files.* This is ruled out by 002, because the data can't be downloaded again.
 
 **Consequences.** Each re-run of a month briefly doubles the storage for that month, until the old version expires after 30 days. Standard-IA and Glacier IR have minimum storage periods (30 and 90 days) and per-GB retrieval fees, which are fine for data that is mostly written once and read rarely. Reading the whole history often, for example rebuilding bronze every week, would make retrieval fees noticeable. Bronze is built incrementally, so that shouldn't happen.
+
+---
+
+## 012. Terraform is the only source of truth for the pipeline user's permissions
+
+**Status:** Accepted
+
+**Context.** The `uk-property-pipeline` user was first created by hand in the console, then imported into Terraform with an `import` block. After applying the least-privilege policy (008), I tested it with the user's own key: listing the raw bucket should work, and listing the Terraform state bucket should fail. The state bucket was readable. The user still had `AdministratorAccess` attached from when I created it by hand.
+
+Terraform hadn't removed it, because Terraform only manages what's in the code. The code declared an inline policy and said nothing about attached managed policies, so Terraform left them alone. Importing a resource doesn't clean up what's already attached to it.
+
+**Decision.**
+- I detached `AdministratorAccess` straight away and re-ran the tests. The raw bucket was still readable and writable, and the state bucket now returned `AccessDenied`.
+- To stop it happening again, `iam.tf` uses two "exclusive" resources:
+  - `aws_iam_user_policy_attachments_exclusive` with `policy_arns = []`: the user may have **no** managed policies.
+  - `aws_iam_user_policies_exclusive` listing only `raw-bucket-access`: no other inline policies.
+- If anyone attaches a policy by hand, the next `terraform plan` shows the drift and `apply` removes it.
+
+**Alternatives.**
+- *Just detach it and move on.* This fixes today's problem, but nothing stops it coming back silently.
+- *An IAM permissions boundary.* It caps what the user can ever do, even if an admin policy is attached. It's stronger, but it's one more policy to maintain, and it doesn't make the drift visible. It might be worth adding later if more users or roles appear.
+- *An AWS Config rule to detect admin policies on users.* This is the right tool across a whole organisation, but too heavy for one project.
+
+**Consequences.**
+- Permissions can only change through a pull request to `iam.tf`. A console change is undone on the next apply, which is the intended behaviour.
+- **Lesson for every future import:** after importing anything, check what's attached to it that the code doesn't describe, and test permissions with the real credentials. A clean `terraform plan` only proves the code matches the parts of AWS that the code mentions.
+- The pipeline's access key had admin rights for a few minutes before the fix. It only ever existed on my machine, so I didn't rotate it.
